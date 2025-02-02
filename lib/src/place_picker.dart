@@ -9,7 +9,7 @@ import 'package:google_maps_place_picker_mb/providers/place_provider.dart';
 import 'package:google_maps_place_picker_mb/src/autocomplete_search.dart';
 import 'package:google_maps_place_picker_mb/src/controllers/autocomplete_search_controller.dart';
 import 'package:google_maps_place_picker_mb/src/google_map_place_picker.dart';
-import 'package:flutter_google_maps_webservices/places.dart';
+import 'package:google_maps_webservice/places.dart';
 import 'package:http/http.dart';
 import 'package:provider/provider.dart';
 import 'dart:io' show Platform;
@@ -65,11 +65,11 @@ class PlacePicker extends StatefulWidget {
     this.resizeToAvoidBottomInset = true,
     this.initialSearchString,
     this.searchForInitialValue = false,
+    this.forceAndroidLocationManager = false,
     this.forceSearchOnZoomChanged = false,
     this.automaticallyImplyAppBarLeading = true,
     this.autocompleteOnTrailingWhitespace = false,
     this.hidePlaceDetailsWhenDraggingPin = true,
-    this.ignoreLocationPermissionErrors = false,
     this.onTapBack,
     this.onCameraMoveStarted,
     this.onCameraMove,
@@ -169,6 +169,11 @@ class PlacePicker extends StatefulWidget {
   /// Whether to search for the initial value or not
   final bool searchForInitialValue;
 
+  /// On Android devices you can set [forceAndroidLocationManager]
+  /// to true to force the plugin to use the [LocationManager] to determine the
+  /// position instead of the [FusedLocationProviderClient]. On iOS this is ignored.
+  final bool forceAndroidLocationManager;
+
   /// Allow searching place when zoom has changed. By default searching is disabled when zoom has changed in order to prevent unwilling API usage.
   final bool forceSearchOnZoomChanged;
 
@@ -182,12 +187,7 @@ class PlacePicker extends StatefulWidget {
   /// Defaults to false.
   final bool autocompleteOnTrailingWhitespace;
 
-  /// Whether to hide place details when dragging pin. Defaults to true.
   final bool hidePlaceDetailsWhenDraggingPin;
-
-  /// Whether to ignore location permission errors. Defaults to false.
-  /// If this is set to `true` the UI will be blocked.
-  final bool ignoreLocationPermissionErrors;
 
   // Raised when clicking on the back arrow.
   // This will not listen for the system back button on Android devices.
@@ -226,10 +226,8 @@ class PlacePicker extends StatefulWidget {
   /// Called when the map type has been changed.
   final Function(MapType)? onMapTypeChanged;
 
-  /// Toggle on & off zoom gestures
+  /// Allow user to make visible the zoom button & toggle on & off zoom gestures
   final bool zoomGesturesEnabled;
-
-  /// Allow user to make visible the zoom button
   final bool zoomControlsEnabled;
 
   @override
@@ -269,8 +267,7 @@ class _PlacePickerState extends State<PlacePicker> {
     provider.desiredAccuracy = widget.desiredLocationAccuracy;
     provider.setMapType(widget.initialMapType);
     if (widget.useCurrentLocation != null && widget.useCurrentLocation!) {
-      await provider.updateCurrentLocation(
-          gracefully: widget.ignoreLocationPermissionErrors);
+      await provider.updateCurrentLocation(widget.forceAndroidLocationManager);
     }
     return provider;
   }
@@ -289,6 +286,7 @@ class _PlacePickerState extends State<PlacePicker> {
               return const Center(child: CircularProgressIndicator());
             } else if (snapshot.hasData) {
               provider = snapshot.data;
+
               return MultiProvider(
                 providers: [
                   ChangeNotifierProvider<PlaceProvider>.value(value: provider!),
@@ -346,15 +344,11 @@ class _PlacePickerState extends State<PlacePicker> {
   Widget _buildSearchBar(BuildContext context) {
     return Row(
       children: <Widget>[
-        SizedBox(width: 15),
-        provider!.placeSearchingState == SearchingState.Idle &&
-                (widget.automaticallyImplyAppBarLeading ||
-                    widget.onTapBack != null)
+        widget.automaticallyImplyAppBarLeading || widget.onTapBack != null
             ? IconButton(
                 onPressed: () {
                   if (!showIntroModal ||
                       widget.introModalWidgetBuilder == null) {
-                    provider?.debounceTimer?.cancel();
                     if (widget.onTapBack != null) {
                       widget.onTapBack!();
                       return;
@@ -367,7 +361,7 @@ class _PlacePickerState extends State<PlacePicker> {
                 ),
                 color: Colors.black.withAlpha(128),
                 padding: EdgeInsets.zero)
-            : Container(),
+            : SizedBox(width: 15),
         Expanded(
           child: AutoCompleteSearch(
               appBarKey: appBarKey,
@@ -377,9 +371,7 @@ class _PlacePickerState extends State<PlacePicker> {
               searchingText: widget.searchingText,
               debounceMilliseconds: widget.autoCompleteDebounceInMilliseconds,
               onPicked: (prediction) {
-                if (mounted) {
-                  _pickPrediction(prediction);
-                }
+                _pickPrediction(prediction);
               },
               onSearchFailed: (status) {
                 if (widget.onAutoCompleteFailed != null) {
@@ -429,14 +421,14 @@ class _PlacePickerState extends State<PlacePicker> {
     await _moveTo(provider!.selectedPlace!.geometry!.location.lat,
         provider!.selectedPlace!.geometry!.location.lng);
 
-    if (provider == null) return;
     provider!.placeSearchingState = SearchingState.Idle;
   }
 
   _moveTo(double latitude, double longitude) async {
-    if (provider?.mapController == null) return;
     GoogleMapController? controller = provider!.mapController;
-    await controller!.animateCamera(
+    if (controller == null) return;
+
+    await controller.animateCamera(
       CameraUpdate.newCameraPosition(
         CameraPosition(
           target: LatLng(latitude, longitude),
@@ -447,9 +439,10 @@ class _PlacePickerState extends State<PlacePicker> {
   }
 
   _moveToCurrentPosition() async {
-    if (provider?.currentPosition == null) return;
-    await _moveTo(provider!.currentPosition!.latitude,
-        provider!.currentPosition!.longitude);
+    if (provider!.currentPosition != null) {
+      await _moveTo(provider!.currentPosition!.latitude,
+          provider!.currentPosition!.longitude);
+    }
   }
 
   Widget _buildMapWithLocation() {
@@ -482,7 +475,6 @@ class _PlacePickerState extends State<PlacePicker> {
       selectText: widget.selectText,
       outsideOfPickAreaText: widget.outsideOfPickAreaText,
       onToggleMapType: () {
-        if (provider == null) return;
         provider!.switchMapType();
         if (widget.onMapTypeChanged != null) {
           widget.onMapTypeChanged!(provider!.mapType);
@@ -490,19 +482,17 @@ class _PlacePickerState extends State<PlacePicker> {
       },
       onMyLocation: () async {
         // Prevent to click many times in short period.
-        if (provider == null) return;
         if (provider!.isOnUpdateLocationCooldown == false) {
           provider!.isOnUpdateLocationCooldown = true;
           Timer(Duration(seconds: widget.myLocationButtonCooldown), () {
             provider!.isOnUpdateLocationCooldown = false;
           });
-          await provider!.updateCurrentLocation(
-              gracefully: widget.ignoreLocationPermissionErrors);
+          await provider!
+              .updateCurrentLocation(widget.forceAndroidLocationManager);
           await _moveToCurrentPosition();
         }
       },
       onMoveStart: () {
-        if (provider == null) return;
         searchBarController.reset();
       },
       onPlacePicked: widget.onPlacePicked,
@@ -534,11 +524,9 @@ class _PlacePickerState extends State<PlacePicker> {
                 ),
               ),
               widget.introModalWidgetBuilder!(context, () {
-                if (mounted) {
-                  setState(() {
-                    showIntroModal = false;
-                  });
-                }
+                setState(() {
+                  showIntroModal = false;
+                });
               })
             ])
           : Container();
